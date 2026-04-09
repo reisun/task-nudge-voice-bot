@@ -18,7 +18,8 @@ class WakeWordActivation:
 
     def setup(self) -> None:
         from openwakeword.model import Model
-        self._model = Model()
+        # inference_framework="onnx" を指定して tflite 依存を回避
+        self._model = Model(inference_framework="onnx")
         logger.info("Wake word model loaded")
 
     def detect(self, audio_chunk: bytes, rate: int = 24000) -> bool:

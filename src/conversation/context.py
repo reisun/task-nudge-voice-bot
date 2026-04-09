@@ -1,9 +1,20 @@
 """タスク情報からsystem promptを生成する."""
 
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 JST = ZoneInfo("Asia/Tokyo")
+
+_PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "prompts"
+
+
+def _load_prompt(name: str, default: str = "") -> str:
+    """prompts/ ディレクトリからテキストファイルを読み込む."""
+    path = _PROMPTS_DIR / name
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    return default
 
 _LABEL_MAP = {
     "overdue": "【期限切れ】",
@@ -56,20 +67,16 @@ def build_system_prompt(categorized: dict[str, list[dict]],
     if habits:
         habits_text = format_habits(habits)
 
+    persona = _load_prompt("persona.txt", "あなたは音声タスクアシスタントです。")
+    capabilities = _load_prompt("capabilities.txt", "- タスクの状況説明や優先順位の相談")
+
     nudge_instruction = ""
     if nudge:
-        nudge_instruction = (
-            "\n\n## 定時通知モード\n"
-            "今は定時通知の時間です。まずあなたから話しかけてください。\n"
-            "タスクの状況を簡潔に伝え、優先順位や進め方について軽く提案してください。\n"
-            "押し付けがましくならず、やる気が出るような声かけを心がけてください。"
-        )
+        nudge_text = _load_prompt("nudge.txt", "タスクの状況を簡潔に伝えてください。")
+        nudge_instruction = f"\n\n## 定時通知モード\n{nudge_text}"
 
     return f"""\
-あなたは音声タスクアシスタントです。
-ユーザーのタスク管理をサポートし、自然な会話で手助けします。
-日本語で、カジュアルで簡潔な口調で応答してください。
-音声会話なので、1-3文程度の短い応答を心がけてください。
+{persona}
 
 ## 現在時刻
 {now} (日本時間)
@@ -79,7 +86,5 @@ def build_system_prompt(categorized: dict[str, list[dict]],
 {habits_text}
 
 ## できること
-- タスクの状況説明や優先順位の相談
-- タスクの完了（complete_task関数を使用）
-- 励ましやモチベーション支援
+{capabilities}
 {nudge_instruction}"""

@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import os
+import time
 
 from openai import AsyncOpenAI
 
@@ -24,6 +25,9 @@ class RealtimeSession:
         self._client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
         self._connection = None
         self._voice = os.environ.get("OPENAI_VOICE", "alloy")
+        self._idle_timeout = int(os.environ.get("SESSION_IDLE_TIMEOUT", "60"))
+        self._last_activity = time.monotonic()
+        self.timed_out = False
 
     async def connect(self) -> None:
         """Realtime APIに接続しセッションを設定."""
@@ -71,35 +75,60 @@ class RealtimeSession:
             )
         await self._connection.response.create()
 
+    def _touch(self) -> None:
+        """アクティビティタイムスタンプを更新."""
+        self._last_activity = time.monotonic()
+
+    async def _idle_watchdog(self) -> None:
+        """無音タイムアウトを監視し、超過したらセッションを終了."""
+        while self._connection:
+            await asyncio.sleep(5)
+            idle = time.monotonic() - self._last_activity
+            if idle >= self._idle_timeout:
+                logger.info("Session idle for %ds, closing", int(idle))
+                self.timed_out = True
+                await self.close()
+                return
+
     async def listen(self) -> None:
         """サーバーからのイベントを受信し処理する."""
         if not self._connection:
             return
-        async for event in self._connection:
-            event_type = event.type
+        # アイドル監視を並行起動
+        watchdog = asyncio.create_task(self._idle_watchdog())
+        try:
+            async for event in self._connection:
+                event_type = event.type
 
-            if event_type == "response.audio.delta":
-                if self.on_audio:
-                    audio_bytes = base64.b64decode(event.delta)
-                    self.on_audio(audio_bytes)
+                if event_type == "response.audio.delta":
+                    self._touch()
+                    if self.on_audio:
+                        audio_bytes = base64.b64decode(event.delta)
+                        self.on_audio(audio_bytes)
 
-            elif event_type == "response.function_call_arguments.done":
-                if self.on_function_call:
-                    result = await self.on_function_call(
-                        event.name, json.loads(event.arguments), event.call_id,
-                    )
-                    if result is not None and self._connection:
-                        await self._connection.conversation.item.create(
-                            item={
-                                "type": "function_call_output",
-                                "call_id": event.call_id,
-                                "output": json.dumps(result),
-                            }
+                elif event_type == "input_audio_buffer.speech_started":
+                    self._touch()
+
+                elif event_type == "response.function_call_arguments.done":
+                    self._touch()
+                    if self.on_function_call:
+                        result = await self.on_function_call(
+                            event.name, json.loads(event.arguments), event.call_id,
                         )
-                        await self._connection.response.create()
+                        if result is not None and self._connection:
+                            await self._connection.conversation.item.create(
+                                item={
+                                    "type": "function_call_output",
+                                    "call_id": event.call_id,
+                                    "output": json.dumps(result),
+                                }
+                            )
+                            await self._connection.response.create()
 
-            elif event_type == "error":
-                logger.error("Realtime API error: %s", event)
+                elif event_type == "error":
+                    logger.error("Realtime API error: %s", event)
+        finally:
+            watchdog.cancel()
 
     async def close(self) -> None:
         """セッションを閉じる."""

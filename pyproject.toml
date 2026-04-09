@@ -2,7 +2,7 @@
 name = "task-nudge-voice-bot"
 version = "0.1.0"
 description = "Voice-based task assistant with TickTick integration"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "openai>=1.30,<2",
     "httpx>=0.25,<1",

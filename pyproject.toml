@@ -16,3 +16,10 @@ dependencies = [
 
 [project.scripts]
 task-nudge-voice = "src.main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.setuptools.packages.find]
+include = ["src*"]

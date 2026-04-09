@@ -27,7 +27,7 @@ class RealtimeSession:
         self._client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
         self._connection = None
         self._voice = os.environ.get("OPENAI_VOICE", "alloy")
-        self._idle_timeout = int(os.environ.get("SESSION_IDLE_TIMEOUT", "60"))
+        self._idle_timeout = int(os.environ.get("SESSION_IDLE_TIMEOUT", "10"))
         self._last_activity = time.monotonic()
         self.timed_out = False
 
@@ -60,8 +60,11 @@ class RealtimeSession:
         """PCM16音声データをAPIに送信."""
         if not self._connection:
             return
-        encoded = base64.b64encode(pcm_data).decode()
-        await self._connection.input_audio_buffer.append(audio=encoded)
+        try:
+            encoded = base64.b64encode(pcm_data).decode()
+            await self._connection.input_audio_buffer.append(audio=encoded)
+        except Exception:
+            pass  # セッション終了中の送信エラーは無視
 
     async def trigger_response(self, nudge_message: str | None = None) -> None:
         """AIに応答を開始させる（定時通知や会話開始時）."""

@@ -1,61 +1,53 @@
-"""Acoustic Echo Cancellation using SpeexDSP."""
+"""Echo suppression via mute-while-playing.
 
-import collections
+SpeexDSP AEC はビルド依存が重いため、AI再生中にマイク送信を
+抑制するシンプルな方式で代替する。
+AI再生終了後に短いクールダウンを設けることで残響もカバーする。
+"""
+
 import logging
 import threading
-
-from speexdsp import EchoCanceller
+import time
 
 logger = logging.getLogger(__name__)
 
-# SpeexDSP の frame_size はサンプル数（バイト数ではない）
-# 24kHz, 16bit mono → 1サンプル = 2バイト
-DEFAULT_FRAME_SAMPLES = 480  # 20ms at 24kHz
-DEFAULT_FILTER_LENGTH = 4800  # 200ms（反響の長さに合わせて調整）
-DEFAULT_RATE = 24000
+DEFAULT_COOLDOWN_SEC = 0.3  # 再生終了後のミュート継続時間
 
 
-class EchoCanceller24k:
-    """24kHz対応のエコーキャンセラー.
+class EchoSuppressor:
+    """AI再生中のマイク送信を抑制するエコー対策."""
 
-    スピーカーに送る音声を参照信号として保持し、
-    マイク入力からエコー成分を除去する。
-    """
-
-    def __init__(self, frame_samples: int = DEFAULT_FRAME_SAMPLES,
-                 filter_length: int = DEFAULT_FILTER_LENGTH,
-                 rate: int = DEFAULT_RATE) -> None:
-        self.frame_samples = frame_samples
-        self.frame_bytes = frame_samples * 2  # 16bit = 2 bytes/sample
-        self._ec = EchoCanceller.create(frame_samples, filter_length, rate)
-        # スピーカー参照信号のバッファ（スレッドセーフ）
-        self._ref_buffer = collections.deque(maxlen=50)
+    def __init__(self, cooldown: float = DEFAULT_COOLDOWN_SEC) -> None:
+        self._cooldown = cooldown
+        self._playing = False
+        self._last_play_time: float = 0
         self._lock = threading.Lock()
-        self._silence = b'\x00' * self.frame_bytes
-        logger.info("Echo canceller initialized (frame=%d samples, filter=%d, rate=%d)",
-                     frame_samples, filter_length, rate)
 
-    def feed_speaker(self, data: bytes) -> None:
-        """スピーカーに送る音声を参照バッファに追加."""
-        # フレームサイズ単位に分割して格納
+    def on_play_start(self) -> None:
+        """AI音声の再生が始まった時に呼ぶ."""
         with self._lock:
-            offset = 0
-            while offset + self.frame_bytes <= len(data):
-                self._ref_buffer.append(data[offset:offset + self.frame_bytes])
-                offset += self.frame_bytes
+            self._playing = True
 
-    def process(self, mic_data: bytes) -> bytes:
-        """マイク入力からエコーを除去して返す."""
-        result = bytearray()
-        offset = 0
-        while offset + self.frame_bytes <= len(mic_data):
-            mic_frame = mic_data[offset:offset + self.frame_bytes]
-            with self._lock:
-                if self._ref_buffer:
-                    ref_frame = self._ref_buffer.popleft()
-                else:
-                    ref_frame = self._silence
-            clean = self._ec.process(mic_frame, ref_frame)
-            result.extend(clean)
-            offset += self.frame_bytes
-        return bytes(result)
+    def on_play_data(self) -> None:
+        """AI音声データが来るたびに呼ぶ."""
+        with self._lock:
+            self._playing = True
+            self._last_play_time = time.monotonic()
+
+    def on_play_end(self) -> None:
+        """AI音声の再生が終わった時に呼ぶ."""
+        with self._lock:
+            self._playing = False
+            self._last_play_time = time.monotonic()
+
+    def should_send_mic(self) -> bool:
+        """マイク音声をAPIに送信してよいかを返す."""
+        with self._lock:
+            if self._playing:
+                return False
+            # クールダウン期間中も抑制
+            if self._last_play_time > 0:
+                elapsed = time.monotonic() - self._last_play_time
+                if elapsed < self._cooldown:
+                    return False
+            return True

@@ -17,11 +17,13 @@ class RealtimeSession:
 
     def __init__(self, system_prompt: str, tools: list[dict] | None = None,
                  on_audio: callable = None,
-                 on_function_call: callable = None) -> None:
+                 on_function_call: callable = None,
+                 on_response_done: callable = None) -> None:
         self.system_prompt = system_prompt
         self.tools = tools or []
         self.on_audio = on_audio
         self.on_function_call = on_function_call
+        self.on_response_done = on_response_done
         self._client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
         self._connection = None
         self._voice = os.environ.get("OPENAI_VOICE", "alloy")
@@ -124,6 +126,11 @@ class RealtimeSession:
                                 }
                             )
                             await self._connection.response.create()
+
+                elif event_type == "response.done":
+                    self._touch()
+                    if self.on_response_done:
+                        self.on_response_done()
 
                 elif event_type == "error":
                     logger.error("Realtime API error: %s", event)

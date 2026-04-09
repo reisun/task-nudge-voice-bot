@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 from src.audio.pyaudio_io import PyAudioInput, PyAudioOutput
 from src.audio.activation import create_activation
-from src.audio.echo_cancel import EchoCanceller24k
+from src.audio.echo_cancel import EchoSuppressor
 from src.conversation.context import build_system_prompt
 from src.conversation.realtime import RealtimeSession
 from src.conversation.tools import (
@@ -39,7 +39,7 @@ class VoiceBot:
         self.activation = create_activation()
         self.mic = PyAudioInput()
         self.speaker = PyAudioOutput()
-        self.echo_canceller = EchoCanceller24k()
+        self.echo_suppressor = EchoSuppressor()
         self._session: RealtimeSession | None = None
         self._listening = False
         self._session_lock = asyncio.Lock()
@@ -85,6 +85,7 @@ class VoiceBot:
                 on_function_call=partial(
                     handle_function_call, ticktick=self.ticktick,
                 ),
+                on_response_done=self.echo_suppressor.on_play_end,
             )
             await session.connect()
             self._session = session
@@ -107,24 +108,21 @@ class VoiceBot:
             await self._stop_session()
 
     async def _stream_audio(self) -> None:
-        """マイクからの音声をエコーキャンセル後にRealtimeセッションに送信."""
+        """マイクからの音声をRealtimeセッションに送信（AI再生中は抑制）."""
         self._listening = True
         loop = asyncio.get_event_loop()
         try:
             while self._listening and self._session:
                 audio = await loop.run_in_executor(None, self.mic.read)
-                # エコーキャンセル: スピーカー出力成分を除去
-                clean_audio = self.echo_canceller.process(audio)
-                if self._session and clean_audio:
-                    await self._session.send_audio(clean_audio)
+                if self._session and self.echo_suppressor.should_send_mic():
+                    await self._session.send_audio(audio)
         except Exception:
             logger.exception("Audio streaming error")
 
     def _play_audio(self, data: bytes) -> None:
         """Realtime APIからの音声をスピーカーで再生."""
         try:
-            # エコーキャンセラーに参照信号を送る（再生前）
-            self.echo_canceller.feed_speaker(data)
+            self.echo_suppressor.on_play_data()
             self.speaker.write(data)
         except Exception:
             logger.warning("Audio playback error", exc_info=True)

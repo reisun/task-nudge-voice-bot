@@ -8,7 +8,6 @@ dependencies = [
     "httpx>=0.25,<1",
     "ticktick-sdk>=0.4,<1",
     "pyaudio>=0.2.14,<1",
-    "speexdsp>=0.1,<1",
     "openwakeword>=0.6,<1",
     "onnxruntime>=1.16,<2",
     "keyboard>=0.13,<1",

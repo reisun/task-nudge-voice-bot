@@ -102,8 +102,8 @@ class VoiceBot:
                 self._stream_audio(),
                 self._session.listen(),
             )
-        except asyncio.CancelledError:
-            pass
+        except (asyncio.CancelledError, Exception):
+            logger.info("Conversation session ended")
         finally:
             await self._stop_session()
 

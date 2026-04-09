@@ -134,12 +134,17 @@ class RealtimeSession:
 
                 elif event_type == "error":
                     logger.error("Realtime API error: %s", event)
+        except Exception:
+            logger.warning("Realtime connection lost", exc_info=True)
         finally:
             watchdog.cancel()
 
     async def close(self) -> None:
         """セッションを閉じる."""
         if self._connection:
-            await self._connection.__aexit__(None, None, None)
+            try:
+                await self._connection.close()
+            except Exception:
+                logger.debug("Connection close error (already closed)", exc_info=True)
             self._connection = None
             logger.info("Realtime session closed")

@@ -4,6 +4,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from src.ticktick.client import _parse_due_date_jst
+
 JST = ZoneInfo("Asia/Tokyo")
 
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "prompts"
@@ -37,7 +39,11 @@ def format_tasks(categorized: dict[str, list[dict]]) -> str:
         lines.append(f"\n{_LABEL_MAP[cat_key]}")
         for t in tasks:
             due = t.get("dueDate", "")
-            due_suffix = f" (期限: {due[:10]})" if due else ""
+            if due:
+                due_date = _parse_due_date_jst(due)
+                due_suffix = f" (期限: {due_date.isoformat()})"
+            else:
+                due_suffix = ""
             lines.append(f"{idx}. {t.get('title', '(no title)')}{due_suffix}")
             idx += 1
     return "\n".join(lines)

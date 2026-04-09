@@ -1,0 +1,18 @@
+[project]
+name = "task-nudge-voice-bot"
+version = "0.1.0"
+description = "Voice-based task assistant with TickTick integration"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.30,<2",
+    "httpx>=0.25,<1",
+    "ticktick-sdk>=0.4,<1",
+    "pyaudio>=0.2.14,<1",
+    "openwakeword>=0.6,<1",
+    "keyboard>=0.13,<1",
+    "apscheduler>=3.10,<4",
+    "python-dotenv>=1.0,<2",
+]
+
+[project.scripts]
+task-nudge-voice = "src.main:main"

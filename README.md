@@ -10,19 +10,37 @@ TickTickのタスク情報をもとに、音声で会話しながらタスク管
 - ウェイクワード / Push-to-talk で会話開始
 - 音声コマンドでタスク完了操作
 
-## セットアップ
+## セットアップ (uv — 推奨)
 
-```bash
-# 依存インストール (portaudioが必要)
-sudo apt install portaudio19-dev python3-dev
-pip install -r requirements.txt
+```powershell
+# uv をインストール (Windows PowerShell)
+irm https://astral.sh/uv/install.ps1 | iex
 
 # 環境変数を設定
 cp .env.example .env
 # .env を編集
 
+# 起動 (Python 3.11 を自動取得)
+uv run task-nudge-voice
+```
+
+### Linux / Raspberry Pi
+
+```bash
+# uv をインストール
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# PortAudio が必要
+sudo apt install portaudio19-dev
+
 # 起動
-python -m src.main
+uv run task-nudge-voice
+```
+
+### Docker
+
+```bash
+docker compose up
 ```
 
 ## 設定

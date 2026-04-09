@@ -1,0 +1,142 @@
+"""TickTick API client — OAuth2トークン管理 + タスク取得・完了."""
+
+import json
+import os
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import httpx
+
+JST = ZoneInfo("Asia/Tokyo")
+
+
+def _parse_due_date_jst(due_str: str) -> date:
+    """TickTickのdueDate文字列をJSTの日付に変換."""
+    try:
+        normalized = due_str.replace("+0000", "+00:00").replace("-0000", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        return dt.astimezone(JST).date()
+    except (ValueError, TypeError):
+        return date.fromisoformat(due_str[:10])
+
+
+BASE_URL = "https://api.ticktick.com/open/v1"
+TOKEN_URL = "https://ticktick.com/oauth/token"
+TOKEN_FILE = Path(os.environ.get("TOKEN_FILE", ".tokens.json"))
+
+
+class TickTickClient:
+    """TickTick Open API クライアント."""
+
+    def __init__(self) -> None:
+        self.client_id = os.environ["TICKTICK_CLIENT_ID"]
+        self.client_secret = os.environ["TICKTICK_CLIENT_SECRET"]
+        self.redirect_uri = os.environ.get(
+            "TICKTICK_REDIRECT_URI", "http://localhost:8080/callback"
+        )
+        self._access_token: str | None = None
+        self._load_token()
+
+    def _load_token(self) -> None:
+        if TOKEN_FILE.exists():
+            data = json.loads(TOKEN_FILE.read_text())
+            self._access_token = data.get("access_token")
+
+    def _save_token(self, data: dict) -> None:
+        TOKEN_FILE.write_text(json.dumps(data, indent=2))
+        self._access_token = data.get("access_token")
+
+    def refresh_token(self) -> None:
+        if not TOKEN_FILE.exists():
+            raise RuntimeError("No token file found. Run auth.py first.")
+        data = json.loads(TOKEN_FILE.read_text())
+        refresh = data.get("refresh_token")
+        if not refresh:
+            raise RuntimeError("No refresh_token in token file.")
+        resp = httpx.post(
+            TOKEN_URL,
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh,
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+            },
+        )
+        resp.raise_for_status()
+        self._save_token(resp.json())
+
+    def _headers(self) -> dict[str, str]:
+        if not self._access_token:
+            raise RuntimeError("No access token. Run auth.py first.")
+        return {"Authorization": f"Bearer {self._access_token}"}
+
+    def _get(self, path: str) -> dict | list:
+        timeout = httpx.Timeout(30.0, connect=10.0)
+        try:
+            resp = httpx.get(f"{BASE_URL}{path}", headers=self._headers(), timeout=timeout)
+        except httpx.ConnectTimeout:
+            resp = httpx.get(f"{BASE_URL}{path}", headers=self._headers(), timeout=timeout)
+        if resp.status_code == 401:
+            self.refresh_token()
+            resp = httpx.get(f"{BASE_URL}{path}", headers=self._headers(), timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_projects(self) -> list[dict]:
+        return self._get("/project")
+
+    def get_project_data(self, project_id: str) -> dict:
+        return self._get(f"/project/{project_id}/data")
+
+    def get_all_tasks(self) -> list[dict]:
+        projects = self.get_projects()
+        tasks: list[dict] = []
+        for proj in projects:
+            try:
+                data = self.get_project_data(proj["id"])
+            except httpx.HTTPStatusError:
+                continue
+            for task in data.get("tasks", []):
+                if task.get("status", 0) != 0:
+                    continue
+                task["_project_id"] = proj["id"]
+                task["_project_name"] = proj.get("name", "")
+                tasks.append(task)
+        return tasks
+
+    def get_categorized_tasks(self) -> dict[str, list[dict]]:
+        today = datetime.now(JST).date()
+        week_end = today + timedelta(days=(6 - today.weekday()))
+        categories: dict[str, list[dict]] = {
+            "overdue": [], "today": [], "week": [], "no_date": [], "future": [],
+        }
+        for task in self.get_all_tasks():
+            due = task.get("dueDate", "")
+            if not due:
+                categories["no_date"].append(task)
+                continue
+            due_date = _parse_due_date_jst(due)
+            if due_date < today:
+                categories["overdue"].append(task)
+            elif due_date == today:
+                categories["today"].append(task)
+            elif due_date <= week_end:
+                categories["week"].append(task)
+            else:
+                categories["future"].append(task)
+        return categories
+
+    def complete_task(self, project_id: str, task_id: str) -> None:
+        timeout = httpx.Timeout(30.0, connect=10.0)
+        resp = httpx.post(
+            f"{BASE_URL}/project/{project_id}/task/{task_id}/complete",
+            headers=self._headers(), timeout=timeout,
+        )
+        if resp.status_code == 401:
+            self.refresh_token()
+            resp = httpx.post(
+                f"{BASE_URL}/project/{project_id}/task/{task_id}/complete",
+                headers=self._headers(), timeout=timeout,
+            )
+        resp.raise_for_status()

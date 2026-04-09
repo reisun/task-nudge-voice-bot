@@ -18,7 +18,9 @@ class WakeWordActivation:
 
     def setup(self) -> None:
         from openwakeword.model import Model
-        # inference_framework="onnx" を指定して tflite 依存を回避
+        import openwakeword
+        # ONNX モデルが未ダウンロードの場合は取得
+        openwakeword.utils.download_models()
         self._model = Model(inference_framework="onnx")
         logger.info("Wake word model loaded")
 

@@ -31,6 +31,8 @@ from src.scheduler.nudge import create_scheduler
 class VoiceBot:
     """メインアプリケーション."""
 
+    CACHE_INTERVAL_SEC = 300  # 5分ごとにタスクを再取得
+
     def __init__(self) -> None:
         self.ticktick = TickTickClient()
         self.activation = create_activation()
@@ -39,13 +41,27 @@ class VoiceBot:
         self._session: RealtimeSession | None = None
         self._listening = False
         self._session_lock = asyncio.Lock()
+        # タスクキャッシュ
+        self._cached_categorized: dict = {}
+        self._cached_habits: list[dict] = []
 
     def _fetch_context(self) -> tuple[dict, list[dict]]:
-        """TickTickからタスクと習慣を取得."""
-        categorized = self.ticktick.get_categorized_tasks()
-        habits = get_habits()
-        refresh_task_list(categorized)
-        return categorized, habits
+        """TickTickからタスクと習慣を取得してキャッシュ更新."""
+        try:
+            self._cached_categorized = self.ticktick.get_categorized_tasks()
+            self._cached_habits = get_habits()
+            refresh_task_list(self._cached_categorized)
+            logger.info("Task cache updated")
+        except Exception:
+            logger.exception("Failed to refresh task cache")
+        return self._cached_categorized, self._cached_habits
+
+    async def _periodic_cache(self) -> None:
+        """バックグラウンドで定期的にタスクキャッシュを更新."""
+        loop = asyncio.get_event_loop()
+        while True:
+            await asyncio.sleep(self.CACHE_INTERVAL_SEC)
+            await loop.run_in_executor(None, self._fetch_context)
 
     async def start_conversation(self, nudge: bool = False) -> None:
         """音声会話セッションを開始."""
@@ -55,7 +71,9 @@ class VoiceBot:
                 return
 
             logger.info("Starting conversation (nudge=%s)", nudge)
-            categorized, habits = self._fetch_context()
+            # キャッシュ済みのデータを使う（即座に開始）
+            categorized = self._cached_categorized
+            habits = self._cached_habits
             system_prompt = build_system_prompt(categorized, habits, nudge=nudge)
 
             session = RealtimeSession(
@@ -126,10 +144,17 @@ class VoiceBot:
         """メインループ: ウェイクワード/PTT検出 → 会話開始."""
         self._loop = asyncio.get_event_loop()
 
+        # 起動時にタスクを先読み
+        logger.info("Fetching initial task data...")
+        await self._loop.run_in_executor(None, self._fetch_context)
+
         # アクティベーションとスケジューラーのセットアップ
         self.activation.setup()
         scheduler = create_scheduler(self._on_nudge)
         scheduler.start()
+
+        # バックグラウンドでキャッシュ更新を開始
+        cache_task = asyncio.create_task(self._periodic_cache())
 
         logger.info("Voice bot started. Waiting for activation...")
 
@@ -149,6 +174,7 @@ class VoiceBot:
         except KeyboardInterrupt:
             logger.info("Shutting down...")
         finally:
+            cache_task.cancel()
             scheduler.shutdown(wait=False)
             self.mic.close()
             self.speaker.close()

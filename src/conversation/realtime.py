@@ -44,9 +44,9 @@ class RealtimeSession:
             "output_audio_format": "pcm16",
             "turn_detection": {
                 "type": "server_vad",
-                "threshold": float(os.environ.get("VAD_THRESHOLD", "0.8")),
-                "prefix_padding_ms": int(os.environ.get("VAD_PREFIX_PADDING_MS", "200")),
-                "silence_duration_ms": int(os.environ.get("VAD_SILENCE_DURATION_MS", "300")),
+                "threshold": float(os.environ.get("VAD_THRESHOLD", "0.5")),
+                "prefix_padding_ms": int(os.environ.get("VAD_PREFIX_PADDING_MS", "300")),
+                "silence_duration_ms": int(os.environ.get("VAD_SILENCE_DURATION_MS", "500")),
             },
         }
         if self.tools:

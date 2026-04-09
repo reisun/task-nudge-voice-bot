@@ -1,0 +1,15 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    devices:
+      # PC/Raspberry Pi のオーディオデバイスをコンテナに共有
+      - /dev/snd:/dev/snd
+    volumes:
+      - bot-data:/data
+    restart: "no"
+
+volumes:
+  bot-data:

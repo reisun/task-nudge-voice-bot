@@ -106,22 +106,22 @@ class TickTickClient:
         return tasks
 
     def get_categorized_tasks(self) -> dict[str, list[dict]]:
-        today = datetime.now(JST).date()
-        week_end = today + timedelta(days=(6 - today.weekday()))
+        today_jst = datetime.now(JST).date()
+        week_end_jst = today_jst + timedelta(days=(6 - today_jst.weekday()))
         categories: dict[str, list[dict]] = {
             "overdue": [], "today": [], "week": [], "no_date": [], "future": [],
         }
         for task in self.get_all_tasks():
-            due = task.get("dueDate", "")
-            if not due:
+            due_utc = task.get("dueDate", "")
+            if not due_utc:
                 categories["no_date"].append(task)
                 continue
-            due_date = _parse_due_date_jst(due)
-            if due_date < today:
+            due_jst = _parse_due_date_jst(due_utc)
+            if due_jst < today_jst:
                 categories["overdue"].append(task)
-            elif due_date == today:
+            elif due_jst == today_jst:
                 categories["today"].append(task)
-            elif due_date <= week_end:
+            elif due_jst <= week_end_jst:
                 categories["week"].append(task)
             else:
                 categories["future"].append(task)

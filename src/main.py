@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 from src.audio.pyaudio_io import PyAudioInput, PyAudioOutput
 from src.audio.activation import create_activation
 from src.audio.echo_cancel import EchoSuppressor
+from src.audio.preprocessing import AudioPreprocessor
 from src.conversation.context import build_system_prompt
 from src.conversation.realtime import RealtimeSession
 from src.conversation.tools import (
@@ -40,6 +41,7 @@ class VoiceBot:
         self.mic = PyAudioInput()
         self.speaker = PyAudioOutput()
         self.echo_suppressor = EchoSuppressor()
+        self.preprocessor = AudioPreprocessor()
         self._session: RealtimeSession | None = None
         self._listening = False
         self._session_lock = asyncio.Lock()
@@ -108,14 +110,15 @@ class VoiceBot:
             await self._stop_session()
 
     async def _stream_audio(self) -> None:
-        """マイクからの音声をRealtimeセッションに送信（AI再生中は抑制）."""
+        """マイクからの音声を前処理後にRealtimeセッションに送信."""
         self._listening = True
         loop = asyncio.get_event_loop()
         try:
             while self._listening and self._session:
                 audio = await loop.run_in_executor(None, self.mic.read)
                 if self._session and self.echo_suppressor.should_send_mic():
-                    await self._session.send_audio(audio)
+                    processed = self.preprocessor.process(audio)
+                    await self._session.send_audio(processed)
         except Exception:
             logger.exception("Audio streaming error")
 

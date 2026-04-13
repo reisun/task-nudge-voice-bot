@@ -89,9 +89,18 @@ class MicAudioTrack(MediaStreamTrack):
                 self._pts += WEBRTC_FRAME_SAMPLES
 
                 try:
-                    self._loop.call_soon_threadsafe(self._queue.put_nowait, frame)
-                except (asyncio.QueueFull, RuntimeError):
-                    pass  # ドロップして遅延蓄積を防止
+                    self._loop.call_soon_threadsafe(self._enqueue_frame, frame)
+                except RuntimeError:
+                    pass  # イベントループ終了時
+
+    def _enqueue_frame(self, frame: av.AudioFrame) -> None:
+        """イベントループ上で安全にフレームをキューに投入."""
+        if self._queue.full():
+            try:
+                self._queue.get_nowait()  # 古いフレームを破棄
+            except asyncio.QueueEmpty:
+                pass
+        self._queue.put_nowait(frame)
 
     async def recv(self) -> av.AudioFrame:
         """Called by aiortc to pull the next audio frame."""

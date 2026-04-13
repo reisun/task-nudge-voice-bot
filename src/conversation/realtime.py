@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 OPENAI_REALTIME_BASE = "https://api.openai.com/v1/realtime"
 OPENAI_MODEL = "gpt-4o-realtime-preview"
+# リモート音声の有音判定閾値 (アイドルタイマー制御用)
+AUDIO_ACTIVITY_RMS = 50
 
 
 class RealtimeSession:
@@ -235,8 +237,14 @@ class RealtimeSession:
                         raw = raw[0::frame.layout.nb_channels]
                     if raw.dtype in (np.float32, np.float64):
                         raw = np.clip(raw * 32767, -32768, 32767)
-                    pcm16_48k = raw.astype(np.int16).tobytes()
-                    pcm16_24k = resample_48k_to_24k(pcm16_48k)
+                    pcm16_samples = raw.astype(np.int16)
+
+                    # AI音声が実際に流れている間はアイドルタイマーをリセット
+                    rms = np.sqrt(np.mean(pcm16_samples.astype(np.float32) ** 2))
+                    if rms >= AUDIO_ACTIVITY_RMS:
+                        self._touch()
+
+                    pcm16_24k = resample_48k_to_24k(pcm16_samples.tobytes())
                     self.on_audio(pcm16_24k)
         except Exception:
             if not self._closed.is_set():

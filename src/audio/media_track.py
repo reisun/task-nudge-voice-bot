@@ -10,6 +10,7 @@ import numpy as np
 from aiortc import MediaStreamTrack
 
 from src.audio.base import AudioInput
+from src.audio.echo_detect import EchoDetector
 from src.audio.preprocessing import AudioPreprocessor
 from src.audio.resampler import resample_24k_to_48k
 
@@ -29,10 +30,12 @@ class MicAudioTrack(MediaStreamTrack):
         self,
         mic: AudioInput,
         preprocessor: AudioPreprocessor,
+        echo_detector: EchoDetector | None = None,
     ) -> None:
         super().__init__()
         self._mic = mic
         self._preprocessor = preprocessor
+        self._echo_detector = echo_detector
         self._queue: asyncio.Queue[av.AudioFrame] = asyncio.Queue(maxsize=20)
         self._pts = 0  # reader thread のみが更新
         self._fallback_pts = 0  # recv タイムアウト時のみ使用 (event loop thread)
@@ -62,6 +65,8 @@ class MicAudioTrack(MediaStreamTrack):
                 logger.warning("Mic read error", exc_info=True)
                 continue
 
+            if self._echo_detector:
+                pcm_data = self._echo_detector.process(pcm_data)
             processed = self._preprocessor.process(pcm_data)
             resampled = resample_24k_to_48k(processed)
             samples_48k = np.frombuffer(resampled, dtype=np.int16)

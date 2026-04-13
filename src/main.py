@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 from src.audio.pyaudio_io import PyAudioInput, PyAudioOutput
 from src.audio.activation import create_activation
+from src.audio.echo_detect import EchoDetector
 from src.audio.media_track import MicAudioTrack
 from src.audio.preprocessing import AudioPreprocessor
 from src.conversation.context import build_system_prompt
@@ -40,6 +41,7 @@ class VoiceBot:
         self.mic = PyAudioInput()
         self.speaker = PyAudioOutput()
         self.preprocessor = AudioPreprocessor()
+        self.echo_detector = EchoDetector()
         self._session: RealtimeSession | None = None
         self._session_lock = asyncio.Lock()
         # タスクキャッシュ
@@ -77,7 +79,9 @@ class VoiceBot:
             habits = self._cached_habits
             system_prompt = build_system_prompt(categorized, habits, nudge=nudge)
 
-            mic_track = MicAudioTrack(self.mic, self.preprocessor)
+            mic_track = MicAudioTrack(
+                self.mic, self.preprocessor, self.echo_detector,
+            )
             session = RealtimeSession(
                 system_prompt=system_prompt,
                 tools=get_tool_definitions(),
@@ -107,6 +111,7 @@ class VoiceBot:
     def _play_audio(self, data: bytes) -> None:
         """Realtime APIからの音声をスピーカーで再生."""
         try:
+            self.echo_detector.feed_playback(data)
             self.speaker.write(data)
         except Exception:
             logger.warning("Audio playback error", exc_info=True)

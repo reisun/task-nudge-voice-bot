@@ -8,7 +8,7 @@ import time
 
 import aiohttp
 import numpy as np
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
 
 from src.audio.media_track import MicAudioTrack
 from src.audio.resampler import resample_48k_to_24k
@@ -68,7 +68,10 @@ class RealtimeSession:
         """WebRTC接続を確立しセッションを設定."""
         token = await self._create_ephemeral_token()
 
-        self._pc = RTCPeerConnection()
+        ice_config = RTCConfiguration(iceServers=[
+            RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
+        ])
+        self._pc = RTCPeerConnection(configuration=ice_config)
 
         # マイク音声トラック追加
         if self._mic_track:

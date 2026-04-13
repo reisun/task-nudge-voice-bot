@@ -86,6 +86,7 @@ class RealtimeSession:
         # リモート音声トラック受信ハンドラ
         @self._pc.on("track")
         def on_track(track):
+            logger.info("Remote track received: kind=%s", track.kind)
             if track.kind == "audio":
                 task = asyncio.ensure_future(self._receive_remote_audio(track))
                 self._tasks.append(task)
@@ -154,14 +155,21 @@ class RealtimeSession:
 
         if event_type == "input_audio_buffer.speech_started":
             self._touch()
+            logger.info("Speech started (user speaking)")
+
+        elif event_type == "response.audio.delta":
+            # WebRTCでは通常発生しないが、念のため記録
+            logger.info("Unexpected response.audio.delta via data channel")
 
         elif event_type == "response.function_call_arguments.done":
             self._touch()
+            logger.info("Function call: %s", event.get("name"))
             if self.on_function_call:
                 asyncio.ensure_future(self._handle_function_call(event))
 
         elif event_type == "response.done":
             self._touch()
+            logger.info("Response done")
             if self.on_response_done:
                 self.on_response_done()
 
@@ -196,7 +204,8 @@ class RealtimeSession:
 
     async def _receive_remote_audio(self, track) -> None:
         """リモート音声トラックからOpenAIの音声を受信・再生."""
-        logger.debug("Receiving remote audio track")
+        logger.info("Starting remote audio receiver")
+        frame_count = 0
         try:
             while not self._closed.is_set():
                 try:
@@ -204,14 +213,22 @@ class RealtimeSession:
                 except asyncio.TimeoutError:
                     continue
 
+                frame_count += 1
+                if frame_count == 1:
+                    logger.info(
+                        "First audio frame: format=%s, layout=%s, "
+                        "sample_rate=%d, samples=%d, dtype=%s",
+                        frame.format.name, frame.layout.name,
+                        frame.sample_rate, frame.samples,
+                        frame.to_ndarray().dtype,
+                    )
+
                 self._touch()
 
                 if self.on_audio:
-                    # AudioFrame → PCM16 mono → 48k→24k リサンプル
                     raw = frame.to_ndarray()
                     if raw.ndim > 1:
-                        raw = raw[0]  # mono化 (先頭チャンネル)
-                    # float形式 (-1.0~1.0) の場合は int16 にスケーリング
+                        raw = raw[0]
                     if raw.dtype in (np.float32, np.float64):
                         raw = np.clip(raw * 32767, -32768, 32767)
                     pcm16_48k = raw.astype(np.int16).tobytes()
@@ -220,6 +237,8 @@ class RealtimeSession:
         except Exception:
             if not self._closed.is_set():
                 logger.warning("Remote audio track ended", exc_info=True)
+        finally:
+            logger.info("Remote audio receiver stopped (frames=%d)", frame_count)
 
     async def send_audio(self, pcm_data: bytes) -> None:
         """互換性のためのno-op. WebRTCではMicAudioTrackが自動送信."""

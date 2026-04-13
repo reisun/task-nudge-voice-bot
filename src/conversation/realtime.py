@@ -226,9 +226,10 @@ class RealtimeSession:
                     )
 
                 if self.on_audio:
-                    raw = frame.to_ndarray()
-                    if raw.ndim > 1:
-                        raw = raw[0]
+                    raw = frame.to_ndarray().flatten()
+                    # ステレオ (s16 インターリーブ L,R,L,R...) → 左チャンネルのみ
+                    if frame.layout.name != "mono":
+                        raw = raw[0::frame.layout.nb_channels]
                     if raw.dtype in (np.float32, np.float64):
                         raw = np.clip(raw * 32767, -32768, 32767)
                     pcm16_samples = raw.astype(np.int16)

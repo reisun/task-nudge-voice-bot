@@ -10,7 +10,6 @@ import numpy as np
 from aiortc import MediaStreamTrack
 
 from src.audio.base import AudioInput
-from src.audio.echo_cancel import EchoSuppressor
 from src.audio.preprocessing import AudioPreprocessor
 from src.audio.resampler import resample_24k_to_48k
 
@@ -30,12 +29,10 @@ class MicAudioTrack(MediaStreamTrack):
         self,
         mic: AudioInput,
         preprocessor: AudioPreprocessor,
-        echo_suppressor: EchoSuppressor,
     ) -> None:
         super().__init__()
         self._mic = mic
         self._preprocessor = preprocessor
-        self._echo_suppressor = echo_suppressor
         self._queue: asyncio.Queue[av.AudioFrame] = asyncio.Queue(maxsize=20)
         self._pts = 0  # reader thread のみが更新
         self._fallback_pts = 0  # recv タイムアウト時のみ使用 (event loop thread)
@@ -65,20 +62,14 @@ class MicAudioTrack(MediaStreamTrack):
                 logger.warning("Mic read error", exc_info=True)
                 continue
 
-            if self._echo_suppressor.should_send_mic():
-                processed = self._preprocessor.process(pcm_data)
-                resampled = resample_24k_to_48k(processed)
-                samples_48k = np.frombuffer(resampled, dtype=np.int16)
-            else:
-                samples_48k = None  # 無音送信
+            processed = self._preprocessor.process(pcm_data)
+            resampled = resample_24k_to_48k(processed)
+            samples_48k = np.frombuffer(resampled, dtype=np.int16)
 
             for i in range(FRAMES_PER_READ):
-                if samples_48k is not None:
-                    start = i * WEBRTC_FRAME_SAMPLES
-                    end = start + WEBRTC_FRAME_SAMPLES
-                    chunk = samples_48k[start:end] if end <= len(samples_48k) else silence_48k
-                else:
-                    chunk = silence_48k
+                start = i * WEBRTC_FRAME_SAMPLES
+                end = start + WEBRTC_FRAME_SAMPLES
+                chunk = samples_48k[start:end] if end <= len(samples_48k) else silence_48k
 
                 frame = av.AudioFrame.from_ndarray(
                     chunk.reshape(1, -1), format="s16", layout="mono",

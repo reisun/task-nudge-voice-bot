@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 from src.audio.pyaudio_io import PyAudioInput, PyAudioOutput
 from src.audio.activation import create_activation
-from src.audio.echo_cancel import EchoSuppressor
 from src.audio.media_track import MicAudioTrack
 from src.audio.preprocessing import AudioPreprocessor
 from src.conversation.context import build_system_prompt
@@ -40,7 +39,6 @@ class VoiceBot:
         self.activation = create_activation()
         self.mic = PyAudioInput()
         self.speaker = PyAudioOutput()
-        self.echo_suppressor = EchoSuppressor()
         self.preprocessor = AudioPreprocessor()
         self._session: RealtimeSession | None = None
         self._session_lock = asyncio.Lock()
@@ -79,9 +77,7 @@ class VoiceBot:
             habits = self._cached_habits
             system_prompt = build_system_prompt(categorized, habits, nudge=nudge)
 
-            mic_track = MicAudioTrack(
-                self.mic, self.preprocessor, self.echo_suppressor,
-            )
+            mic_track = MicAudioTrack(self.mic, self.preprocessor)
             session = RealtimeSession(
                 system_prompt=system_prompt,
                 tools=get_tool_definitions(),
@@ -89,8 +85,6 @@ class VoiceBot:
                 on_function_call=partial(
                     handle_function_call, ticktick=self.ticktick,
                 ),
-                on_response_start=self.echo_suppressor.on_play_start,
-                on_response_done=self.echo_suppressor.on_play_end,
                 mic_track=mic_track,
             )
             await session.connect()

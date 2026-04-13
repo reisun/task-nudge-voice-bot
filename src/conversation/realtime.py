@@ -28,16 +28,12 @@ class RealtimeSession:
         tools: list[dict] | None = None,
         on_audio: callable = None,
         on_function_call: callable = None,
-        on_response_start: callable = None,
-        on_response_done: callable = None,
         mic_track: MicAudioTrack | None = None,
     ) -> None:
         self.system_prompt = system_prompt
         self.tools = tools or []
         self.on_audio = on_audio
         self.on_function_call = on_function_call
-        self.on_response_start = on_response_start
-        self.on_response_done = on_response_done
         self._mic_track = mic_track
         self._api_key = os.environ["OPENAI_API_KEY"]
         self._voice = os.environ.get("OPENAI_VOICE", "alloy")
@@ -163,8 +159,6 @@ class RealtimeSession:
         elif event_type == "response.created":
             self._touch()
             logger.info("Response created (AI speaking)")
-            if self.on_response_start:
-                self.on_response_start()
 
         elif event_type == "response.function_call_arguments.done":
             self._touch()
@@ -175,8 +169,6 @@ class RealtimeSession:
         elif event_type == "response.done":
             self._touch()
             logger.info("Response done")
-            if self.on_response_done:
-                self.on_response_done()
 
         elif event_type == "error":
             logger.error("Realtime API error: %s", event)

@@ -17,9 +17,7 @@ class TestMicAudioTrack:
         mic.read.return_value = np.zeros(2400, dtype=np.int16).tobytes()
         preprocessor = MagicMock()
         preprocessor.process.side_effect = lambda x: x  # パススルー
-        echo_suppressor = MagicMock()
-        echo_suppressor.should_send_mic.return_value = True
-        return MicAudioTrack(mic, preprocessor, echo_suppressor)
+        return MicAudioTrack(mic, preprocessor)
 
     def test_kind_is_audio(self):
         track = self._make_track()
@@ -44,25 +42,6 @@ class TestMicAudioTrack:
             frame1 = await asyncio.wait_for(track.recv(), timeout=2.0)
             frame2 = await asyncio.wait_for(track.recv(), timeout=2.0)
             assert frame2.pts == frame1.pts + WEBRTC_FRAME_SAMPLES
-        finally:
-            track.stop()
-
-    @pytest.mark.asyncio
-    async def test_echo_suppression_sends_silence(self):
-        mic = MagicMock()
-        # ノイズを送信してエコー抑制で無音になることを確認
-        mic.read.return_value = (np.ones(2400, dtype=np.int16) * 1000).tobytes()
-        preprocessor = MagicMock()
-        preprocessor.process.side_effect = lambda x: x
-        echo_suppressor = MagicMock()
-        echo_suppressor.should_send_mic.return_value = False  # エコー抑制中
-
-        track = MicAudioTrack(mic, preprocessor, echo_suppressor)
-        track.start_reading()
-        try:
-            frame = await asyncio.wait_for(track.recv(), timeout=2.0)
-            samples = frame.to_ndarray().flatten()
-            assert np.all(samples == 0)
         finally:
             track.stop()
 
@@ -146,7 +125,6 @@ class TestRealtimeSessionEventDispatch:
             session = RealtimeSession(
                 system_prompt="test",
                 on_function_call=AsyncMock(return_value={"ok": True}),
-                on_response_done=MagicMock(),
             )
         return session
 
@@ -160,10 +138,11 @@ class TestRealtimeSessionEventDispatch:
         }))
         assert session._last_activity >= old_time
 
-    def test_response_done_calls_callback(self):
+    def test_response_done_updates_activity(self):
         session = self._make_session()
+        old_time = session._last_activity
         session._on_dc_message(json.dumps({"type": "response.done"}))
-        session.on_response_done.assert_called_once()
+        assert session._last_activity >= old_time
 
     def test_error_event_logged(self):
         session = self._make_session()

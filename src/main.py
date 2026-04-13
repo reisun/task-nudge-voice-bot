@@ -89,6 +89,7 @@ class VoiceBot:
                 on_function_call=partial(
                     handle_function_call, ticktick=self.ticktick,
                 ),
+                on_response_start=self.echo_suppressor.on_play_start,
                 on_response_done=self.echo_suppressor.on_play_end,
                 mic_track=mic_track,
             )
@@ -112,7 +113,6 @@ class VoiceBot:
     def _play_audio(self, data: bytes) -> None:
         """Realtime APIからの音声をスピーカーで再生."""
         try:
-            self.echo_suppressor.on_play_data()
             self.speaker.write(data)
         except Exception:
             logger.warning("Audio playback error", exc_info=True)

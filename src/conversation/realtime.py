@@ -17,8 +17,6 @@ logger = logging.getLogger(__name__)
 
 OPENAI_REALTIME_BASE = "https://api.openai.com/v1/realtime"
 OPENAI_MODEL = "gpt-4o-realtime-preview"
-# 無音判定の閾値 (int16 RMS) — WebRTCは常時フレームを送るため無音を除外する
-SILENCE_RMS_THRESHOLD = 50
 
 
 class RealtimeSession:
@@ -30,6 +28,7 @@ class RealtimeSession:
         tools: list[dict] | None = None,
         on_audio: callable = None,
         on_function_call: callable = None,
+        on_response_start: callable = None,
         on_response_done: callable = None,
         mic_track: MicAudioTrack | None = None,
     ) -> None:
@@ -37,6 +36,7 @@ class RealtimeSession:
         self.tools = tools or []
         self.on_audio = on_audio
         self.on_function_call = on_function_call
+        self.on_response_start = on_response_start
         self.on_response_done = on_response_done
         self._mic_track = mic_track
         self._api_key = os.environ["OPENAI_API_KEY"]
@@ -160,9 +160,11 @@ class RealtimeSession:
             self._touch()
             logger.info("Speech started (user speaking)")
 
-        elif event_type == "response.audio.delta":
-            # WebRTCでは通常発生しないが、念のため記録
-            logger.info("Unexpected response.audio.delta via data channel")
+        elif event_type == "response.created":
+            self._touch()
+            logger.info("Response created (AI speaking)")
+            if self.on_response_start:
+                self.on_response_start()
 
         elif event_type == "response.function_call_arguments.done":
             self._touch()
@@ -233,15 +235,7 @@ class RealtimeSession:
                         raw = raw[0::frame.layout.nb_channels]
                     if raw.dtype in (np.float32, np.float64):
                         raw = np.clip(raw * 32767, -32768, 32767)
-                    pcm16_samples = raw.astype(np.int16)
-
-                    # 無音フレームはスキップ (エコー抑制の誤作動を防止)
-                    rms = np.sqrt(np.mean(pcm16_samples.astype(np.float32) ** 2))
-                    if rms < SILENCE_RMS_THRESHOLD:
-                        continue
-
-                    self._touch()
-                    pcm16_48k = pcm16_samples.tobytes()
+                    pcm16_48k = raw.astype(np.int16).tobytes()
                     pcm16_24k = resample_48k_to_24k(pcm16_48k)
                     self.on_audio(pcm16_24k)
         except Exception:

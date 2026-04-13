@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import os
-import threading
 from functools import partial
 
 from dotenv import load_dotenv
@@ -19,6 +18,7 @@ logger = logging.getLogger(__name__)
 from src.audio.pyaudio_io import PyAudioInput, PyAudioOutput
 from src.audio.activation import create_activation
 from src.audio.echo_cancel import EchoSuppressor
+from src.audio.media_track import MicAudioTrack
 from src.audio.preprocessing import AudioPreprocessor
 from src.conversation.context import build_system_prompt
 from src.conversation.realtime import RealtimeSession
@@ -43,7 +43,6 @@ class VoiceBot:
         self.echo_suppressor = EchoSuppressor()
         self.preprocessor = AudioPreprocessor()
         self._session: RealtimeSession | None = None
-        self._listening = False
         self._session_lock = asyncio.Lock()
         # タスクキャッシュ
         self._cached_categorized: dict = {}
@@ -80,6 +79,9 @@ class VoiceBot:
             habits = self._cached_habits
             system_prompt = build_system_prompt(categorized, habits, nudge=nudge)
 
+            mic_track = MicAudioTrack(
+                self.mic, self.preprocessor, self.echo_suppressor,
+            )
             session = RealtimeSession(
                 system_prompt=system_prompt,
                 tools=get_tool_definitions(),
@@ -88,6 +90,7 @@ class VoiceBot:
                     handle_function_call, ticktick=self.ticktick,
                 ),
                 on_response_done=self.echo_suppressor.on_play_end,
+                mic_track=mic_track,
             )
             await session.connect()
             self._session = session
@@ -98,29 +101,13 @@ class VoiceBot:
                 "定時通知です。今のタスク状況を教えてください。"
             )
 
-        # 音声送信とイベント受信を並行実行
+        # WebRTCイベント受信を待機 (音声はMicAudioTrackが自動送信)
         try:
-            await asyncio.gather(
-                self._stream_audio(),
-                self._session.listen(),
-            )
+            await self._session.listen()
         except (asyncio.CancelledError, Exception):
             logger.info("Conversation session ended")
         finally:
             await self._stop_session()
-
-    async def _stream_audio(self) -> None:
-        """マイクからの音声を前処理後にRealtimeセッションに送信."""
-        self._listening = True
-        loop = asyncio.get_event_loop()
-        try:
-            while self._listening and self._session:
-                audio = await loop.run_in_executor(None, self.mic.read)
-                if self._session and self.echo_suppressor.should_send_mic():
-                    processed = self.preprocessor.process(audio)
-                    await self._session.send_audio(processed)
-        except Exception:
-            logger.exception("Audio streaming error")
 
     def _play_audio(self, data: bytes) -> None:
         """Realtime APIからの音声をスピーカーで再生."""
@@ -132,7 +119,6 @@ class VoiceBot:
 
     async def _stop_session(self) -> None:
         """セッションを終了."""
-        self._listening = False
         async with self._session_lock:
             if self._session:
                 await self._session.close()

@@ -40,6 +40,7 @@ class RealtimeSession:
         self._idle_timeout = int(os.environ.get("SESSION_IDLE_TIMEOUT", "10"))
         self._last_activity = time.monotonic()
         self.timed_out = False
+        self._in_conversation = False  # ユーザーまたはAIが発話中
         self._pc: RTCPeerConnection | None = None
         self._dc = None  # RTCDataChannel
         self._dc_ready = asyncio.Event()
@@ -153,10 +154,16 @@ class RealtimeSession:
         event_type = event.get("type", "")
 
         if event_type == "input_audio_buffer.speech_started":
+            self._in_conversation = True
             self._touch()
             logger.info("Speech started (user speaking)")
 
+        elif event_type == "input_audio_buffer.speech_stopped":
+            self._touch()
+            logger.info("Speech stopped (user stopped)")
+
         elif event_type == "response.created":
+            self._in_conversation = True
             self._touch()
             logger.info("Response created (AI speaking)")
 
@@ -167,7 +174,8 @@ class RealtimeSession:
                 asyncio.ensure_future(self._handle_function_call(event))
 
         elif event_type == "response.done":
-            self._touch()
+            self._in_conversation = False
+            self._touch()  # 会話終了 → ここからアイドル計測開始
             logger.info("Response done")
 
         elif event_type == "error":
@@ -263,6 +271,8 @@ class RealtimeSession:
         """無音タイムアウトを監視し、超過したらセッションを終了."""
         while not self._closed.is_set():
             await asyncio.sleep(5)
+            if self._in_conversation:
+                continue  # 会話中はアイドル計測しない
             idle = time.monotonic() - self._last_activity
             if idle >= self._idle_timeout:
                 logger.info("Session idle for %ds, closing", int(idle))

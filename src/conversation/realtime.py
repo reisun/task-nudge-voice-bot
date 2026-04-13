@@ -120,6 +120,7 @@ class RealtimeSession:
             await self.close()
             raise ConnectionError("WebRTC session configuration failed")
 
+        self._touch()  # 接続完了時にアイドルタイマーをリセット
         logger.info("Realtime session connected via WebRTC (voice=%s)", self._voice)
 
     def _on_dc_open(self) -> None:

@@ -1,47 +1,126 @@
-"""OpenAI Realtime API session management."""
+"""OpenAI Realtime API session management via WebRTC."""
 
 import asyncio
-import base64
 import json
 import logging
 import os
 import time
 
-from openai import AsyncOpenAI
+import aiohttp
+import numpy as np
+from aiortc import RTCPeerConnection, RTCSessionDescription
+
+from src.audio.media_track import MicAudioTrack
+from src.audio.resampler import resample_48k_to_24k
 
 logger = logging.getLogger(__name__)
 
+OPENAI_REALTIME_BASE = "https://api.openai.com/v1/realtime"
+OPENAI_MODEL = "gpt-4o-realtime-preview"
+
 
 class RealtimeSession:
-    """OpenAI Realtime APIとの音声会話セッション."""
+    """OpenAI Realtime APIとの音声会話セッション (WebRTC)."""
 
-    def __init__(self, system_prompt: str, tools: list[dict] | None = None,
-                 on_audio: callable = None,
-                 on_function_call: callable = None,
-                 on_response_done: callable = None) -> None:
+    def __init__(
+        self,
+        system_prompt: str,
+        tools: list[dict] | None = None,
+        on_audio: callable = None,
+        on_function_call: callable = None,
+        on_response_done: callable = None,
+        mic_track: MicAudioTrack | None = None,
+    ) -> None:
         self.system_prompt = system_prompt
         self.tools = tools or []
         self.on_audio = on_audio
         self.on_function_call = on_function_call
         self.on_response_done = on_response_done
-        self._client = AsyncOpenAI(api_key=os.environ["OPENAI_API_KEY"])
-        self._connection = None
+        self._mic_track = mic_track
+        self._api_key = os.environ["OPENAI_API_KEY"]
         self._voice = os.environ.get("OPENAI_VOICE", "alloy")
         self._idle_timeout = int(os.environ.get("SESSION_IDLE_TIMEOUT", "10"))
         self._last_activity = time.monotonic()
         self.timed_out = False
+        self._pc: RTCPeerConnection | None = None
+        self._dc = None  # RTCDataChannel
+        self._dc_ready = asyncio.Event()
+        self._session_configured = asyncio.Event()
+        self._closed = asyncio.Event()
+        self._tasks: list[asyncio.Task] = []
+
+    async def _create_ephemeral_token(self) -> str:
+        """エフェメラルトークンを取得."""
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{OPENAI_REALTIME_BASE}/sessions",
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"model": OPENAI_MODEL, "voice": self._voice},
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                return data["client_secret"]["value"]
 
     async def connect(self) -> None:
-        """Realtime APIに接続しセッションを設定."""
-        self._connection = await self._client.beta.realtime.connect(
-            model="gpt-4o-realtime-preview",
-        ).__aenter__()
+        """WebRTC接続を確立しセッションを設定."""
+        token = await self._create_ephemeral_token()
 
+        self._pc = RTCPeerConnection()
+
+        # マイク音声トラック追加
+        if self._mic_track:
+            self._pc.addTrack(self._mic_track)
+            self._mic_track.start_reading()
+
+        # Data Channel作成 (イベント送受信用)
+        self._dc = self._pc.createDataChannel("oai-events", ordered=True)
+        self._dc.on("open", self._on_dc_open)
+        self._dc.on("message", self._on_dc_message)
+
+        # リモート音声トラック受信ハンドラ
+        @self._pc.on("track")
+        def on_track(track):
+            if track.kind == "audio":
+                task = asyncio.ensure_future(self._receive_remote_audio(track))
+                self._tasks.append(task)
+
+        # SDP offer作成・送信
+        offer = await self._pc.createOffer()
+        await self._pc.setLocalDescription(offer)
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{OPENAI_REALTIME_BASE}?model={OPENAI_MODEL}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/sdp",
+                },
+                data=self._pc.localDescription.sdp,
+            ) as resp:
+                resp.raise_for_status()
+                answer_sdp = await resp.text()
+
+        answer = RTCSessionDescription(sdp=answer_sdp, type="answer")
+        await self._pc.setRemoteDescription(answer)
+
+        # Data Channelが開きsession.updatedを受信するまで待機
+        try:
+            await asyncio.wait_for(self._session_configured.wait(), timeout=15.0)
+        except asyncio.TimeoutError:
+            logger.error("Session configuration timeout")
+            await self.close()
+            raise ConnectionError("WebRTC session configuration failed")
+
+        logger.info("Realtime session connected via WebRTC (voice=%s)", self._voice)
+
+    def _on_dc_open(self) -> None:
+        """Data Channel開通時にセッション設定を送信."""
         session_config = {
             "instructions": self.system_prompt,
             "voice": self._voice,
-            "input_audio_format": "pcm16",
-            "output_audio_format": "pcm16",
             "turn_detection": {
                 "type": "server_vad",
                 "threshold": float(os.environ.get("VAD_THRESHOLD", "0.5")),
@@ -53,32 +132,106 @@ class RealtimeSession:
             session_config["tools"] = self.tools
             session_config["tool_choice"] = "auto"
 
-        await self._connection.session.update(session=session_config)
-        logger.info("Realtime session connected (voice=%s)", self._voice)
+        self._dc.send(json.dumps({
+            "type": "session.update",
+            "session": session_config,
+        }))
+        self._dc_ready.set()
+        logger.debug("Data channel open, session.update sent")
+
+    def _on_dc_message(self, message: str) -> None:
+        """Data Channelからのイベントを処理."""
+        try:
+            event = json.loads(message)
+        except json.JSONDecodeError:
+            logger.warning("Invalid JSON from data channel: %s", message[:200])
+            return
+
+        event_type = event.get("type", "")
+
+        if event_type == "input_audio_buffer.speech_started":
+            self._touch()
+
+        elif event_type == "response.function_call_arguments.done":
+            self._touch()
+            if self.on_function_call:
+                asyncio.ensure_future(self._handle_function_call(event))
+
+        elif event_type == "response.done":
+            self._touch()
+            if self.on_response_done:
+                self.on_response_done()
+
+        elif event_type == "error":
+            logger.error("Realtime API error: %s", event)
+
+        elif event_type == "session.created":
+            logger.debug("Session created: %s", event.get("session", {}).get("id", ""))
+
+        elif event_type == "session.updated":
+            self._session_configured.set()
+            logger.debug("Session updated")
+
+    async def _handle_function_call(self, event: dict) -> None:
+        """Function callを処理して結果を返送."""
+        try:
+            result = await self.on_function_call(
+                event["name"], json.loads(event["arguments"]), event["call_id"],
+            )
+            if result is not None and self._dc:
+                self._dc.send(json.dumps({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": event["call_id"],
+                        "output": json.dumps(result),
+                    },
+                }))
+                self._dc.send(json.dumps({"type": "response.create"}))
+        except Exception:
+            logger.exception("Function call handling error")
+
+    async def _receive_remote_audio(self, track) -> None:
+        """リモート音声トラックからOpenAIの音声を受信・再生."""
+        logger.debug("Receiving remote audio track")
+        try:
+            while not self._closed.is_set():
+                try:
+                    frame = await asyncio.wait_for(track.recv(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+
+                self._touch()
+
+                if self.on_audio:
+                    # AudioFrame → s16 mono に正規化 → 48k→24k リサンプル
+                    frame_s16 = frame.reformat(format="s16", layout="mono")
+                    raw = frame_s16.to_ndarray().flatten()
+                    pcm16_48k = raw.astype(np.int16).tobytes()
+                    pcm16_24k = resample_48k_to_24k(pcm16_48k)
+                    self.on_audio(pcm16_24k)
+        except Exception:
+            if not self._closed.is_set():
+                logger.warning("Remote audio track ended", exc_info=True)
 
     async def send_audio(self, pcm_data: bytes) -> None:
-        """PCM16音声データをAPIに送信."""
-        if not self._connection:
-            return
-        try:
-            encoded = base64.b64encode(pcm_data).decode()
-            await self._connection.input_audio_buffer.append(audio=encoded)
-        except Exception:
-            pass  # セッション終了中の送信エラーは無視
+        """互換性のためのno-op. WebRTCではMicAudioTrackが自動送信."""
+        pass
 
     async def trigger_response(self, nudge_message: str | None = None) -> None:
         """AIに応答を開始させる（定時通知や会話開始時）."""
-        if not self._connection:
+        if not self._dc:
             return
         if nudge_message:
-            await self._connection.conversation.item.create(
-                item={
+            self._dc.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {
                     "type": "message",
                     "role": "user",
                     "content": [{"type": "input_text", "text": nudge_message}],
-                }
-            )
-        await self._connection.response.create()
+                },
+            }))
+        self._dc.send(json.dumps({"type": "response.create"}))
 
     def _touch(self) -> None:
         """アクティビティタイムスタンプを更新."""
@@ -86,7 +239,7 @@ class RealtimeSession:
 
     async def _idle_watchdog(self) -> None:
         """無音タイムアウトを監視し、超過したらセッションを終了."""
-        while self._connection:
+        while not self._closed.is_set():
             await asyncio.sleep(5)
             idle = time.monotonic() - self._last_activity
             if idle >= self._idle_timeout:
@@ -96,58 +249,34 @@ class RealtimeSession:
                 return
 
     async def listen(self) -> None:
-        """サーバーからのイベントを受信し処理する."""
-        if not self._connection:
+        """Data Channelイベントとリモート音声の受信を待機."""
+        if not self._pc:
             return
-        # アイドル監視を並行起動
         watchdog = asyncio.create_task(self._idle_watchdog())
+        self._tasks.append(watchdog)
         try:
-            async for event in self._connection:
-                event_type = event.type
-
-                if event_type == "response.audio.delta":
-                    self._touch()
-                    if self.on_audio:
-                        audio_bytes = base64.b64decode(event.delta)
-                        self.on_audio(audio_bytes)
-
-                elif event_type == "input_audio_buffer.speech_started":
-                    self._touch()
-
-                elif event_type == "response.function_call_arguments.done":
-                    self._touch()
-                    if self.on_function_call:
-                        result = await self.on_function_call(
-                            event.name, json.loads(event.arguments), event.call_id,
-                        )
-                        if result is not None and self._connection:
-                            await self._connection.conversation.item.create(
-                                item={
-                                    "type": "function_call_output",
-                                    "call_id": event.call_id,
-                                    "output": json.dumps(result),
-                                }
-                            )
-                            await self._connection.response.create()
-
-                elif event_type == "response.done":
-                    self._touch()
-                    if self.on_response_done:
-                        self.on_response_done()
-
-                elif event_type == "error":
-                    logger.error("Realtime API error: %s", event)
-        except Exception:
-            logger.warning("Realtime connection lost", exc_info=True)
+            await self._closed.wait()
         finally:
             watchdog.cancel()
 
     async def close(self) -> None:
         """セッションを閉じる."""
-        if self._connection:
+        if self._closed.is_set():
+            return
+        self._closed.set()
+
+        if self._mic_track:
+            self._mic_track.stop()
+
+        for task in self._tasks:
+            task.cancel()
+        self._tasks.clear()
+
+        if self._pc:
             try:
-                await self._connection.close()
+                await self._pc.close()
             except Exception:
-                logger.debug("Connection close error (already closed)", exc_info=True)
-            self._connection = None
-            logger.info("Realtime session closed")
+                logger.debug("PeerConnection close error", exc_info=True)
+            self._pc = None
+        self._dc = None
+        logger.info("Realtime session closed")

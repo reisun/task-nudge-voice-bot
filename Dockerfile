@@ -5,6 +5,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-dev \
     libasound2-dev \
     gcc \
+    libavformat-dev \
+    libavcodec-dev \
+    libavutil-dev \
+    libswresample-dev \
+    libopus-dev \
+    libvpx-dev \
+    pkg-config \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

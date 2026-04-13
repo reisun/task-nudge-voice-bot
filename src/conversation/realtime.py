@@ -207,9 +207,13 @@ class RealtimeSession:
                 self._touch()
 
                 if self.on_audio:
-                    # AudioFrame → s16 mono に正規化 → 48k→24k リサンプル
-                    frame_s16 = frame.reformat(format="s16", layout="mono")
-                    raw = frame_s16.to_ndarray().flatten()
+                    # AudioFrame → PCM16 mono → 48k→24k リサンプル
+                    raw = frame.to_ndarray()
+                    if raw.ndim > 1:
+                        raw = raw[0]  # mono化 (先頭チャンネル)
+                    # float形式 (-1.0~1.0) の場合は int16 にスケーリング
+                    if raw.dtype in (np.float32, np.float64):
+                        raw = np.clip(raw * 32767, -32768, 32767)
                     pcm16_48k = raw.astype(np.int16).tobytes()
                     pcm16_24k = resample_48k_to_24k(pcm16_48k)
                     self.on_audio(pcm16_24k)
